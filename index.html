@@ -24,6 +24,8 @@ let last = performance.now();
 let state = 'title';
 function loadBest(){ try { return +(localStorage.getItem('cutline_best') || 0); } catch(e) { return 0; } }
 function saveBest(v){ try { localStorage.setItem('cutline_best', String(v)); } catch(e) {} }
+function loadIntroSeen(){ try { return localStorage.getItem('cutline_intro_seen') === '1'; } catch(e) { return false; } }
+function saveIntroSeen(){ try { localStorage.setItem('cutline_intro_seen','1'); } catch(e) {} }
 let score = 0, best = loadBest();
 let integrity = 3, combo = 0, maxCombo = 0, elapsed = 0, spawnClock = 0, surgeClock = 0;
 let playerAngle = -Math.PI/2, orbitDir = 1;
@@ -32,7 +34,12 @@ let shake = 0, flash = 0, slowPulse = 0, gameOverClock = 0;
 let entities = [], particles = [], texts = [], rings = [], stars = [];
 let slash = null;
 let audio = null;
-let demo = new URLSearchParams(location.search).has('autostart');
+const params = new URLSearchParams(location.search);
+let demo = params.has('autostart');
+let forceTutorial = params.has('tutorial');
+let onboarding = {active:false, phase:'', age:0};
+let introRamp = 999, introPairClock = -1;
+let runCues = {gold:false, mine:false};
 
 function resize(){
   DPR = Math.min(2, window.devicePixelRatio || 1);
@@ -72,12 +79,16 @@ function arena(){
   return {cx:W/2, cy:H/2, r};
 }
 function reset(){
+  const guided = forceTutorial || !loadIntroSeen();
   score=0; integrity=3; combo=0; maxCombo=0; elapsed=0; spawnClock=.2; surgeClock=0;
-  playerAngle=-Math.PI/2; orbitDir=Math.random()<.5?-1:1; holding=false; holdSource=null; focus=100; cutCooldown=0;
+  playerAngle=-Math.PI/2; orbitDir=guided?1:(Math.random()<.5?-1:1); holding=false; holdSource=null; focus=100; cutCooldown=0;
   shake=0; flash=0; slowPulse=0; gameOverClock=0; entities=[]; particles=[]; texts=[]; rings=[]; slash=null;
+  onboarding={active:guided,phase:guided?'escape':'',age:0};
+  introRamp=guided?0:999; introPairClock=-1; runCues={gold:false,mine:false};
   state='play';
   const a=arena();
-  for(let i=0;i<3;i++) spawnTarget('spark', a.r*(.2+i*.12));
+  if(guided) spawnTutorialTarget();
+  else for(let i=0;i<3;i++) spawnTarget('spark', a.r*(.2+i*.12));
   tone(220,.12,'triangle',.05,2.0); setTimeout(()=>tone(440,.08,'triangle',.035,1.5),70);
 }
 function endGame(){
@@ -89,24 +100,57 @@ function endGame(){
 
 function rand(a=0,b=1){ return a+Math.random()*(b-a); }
 function angDiff(a,b){ let d=(a-b+Math.PI)%TAU-Math.PI; return d<-Math.PI?d+TAU:d; }
+function lineDiff(a,b){ const d=Math.abs(angDiff(a,b)); return Math.min(d,Math.abs(Math.PI-d)); }
 function pol(cx,cy,r,a){ return {x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r}; }
+function escapeRisk(e,a){ return Math.max(0,Math.min(1,(e.r/a.r-.52)/.43)); }
 
-function spawnTarget(kind=null, initialR=null){
+function spawnTarget(kind=null, initialR=null, forcedAngle=null, forcedVa=null){
   const a=arena();
   if(!kind){
     const d=Math.min(1, elapsed/80);
     const roll=Math.random();
-    if(roll < .13 + d*.05) kind='mine';
+    if(introRamp<5) kind='spark';
+    else if(introRamp<9) kind=roll<.13?'gold':'spark';
+    else if(roll < .13 + d*.05) kind='mine';
     else if(roll < .20 + d*.06) kind='gold';
     else kind='spark';
   }
-  const angle=rand(0,TAU), r=initialR ?? rand(a.r*.08,a.r*.35);
+  const angle=forcedAngle ?? rand(0,TAU), r=initialR ?? rand(a.r*.08,a.r*.35);
   const baseSpeed = a.r*(.055 + Math.min(.085,elapsed*.0009));
-  let e={kind, angle, r, vr:baseSpeed*rand(.78,1.18), va:rand(-.20,.20), age:0, pulse:rand(0,TAU), dead:false};
+  let e={kind, angle, r, vr:baseSpeed*rand(.78,1.18), va:forcedVa ?? rand(-.20,.20), age:0, pulse:rand(0,TAU), dead:false};
   if(kind==='mine'){ e.vr*=.72; e.va*=1.5; e.rad=11; }
   if(kind==='gold'){ e.vr*=1.15; e.rad=8; }
   if(kind==='spark'){ e.rad=7; }
   entities.push(e);
+  if(kind==='gold' && !runCues.gold && introRamp<30){
+    runCues.gold=true; floatText(a.cx,a.cy-a.r*.56,'GOLD SPLITS','gold',13,1.15);
+  }
+  if(kind==='mine' && !runCues.mine && introRamp<30){
+    runCues.mine=true; floatText(a.cx,a.cy-a.r*.56,'AVOID RED FRACTURES','bad',13,1.15);
+  }
+  return e;
+}
+function spawnTutorialTarget(){
+  const a=arena();
+  const e=spawnTarget('spark',a.r*.22,playerAngle+orbitDir*1.9,0);
+  e.vr=a.r*.052; e.rad=8; e.tutorial=true;
+  return e;
+}
+function spawnAlignedPair(){
+  const a=arena(), an=playerAngle+orbitDir*1.55, va=orbitDir*.035;
+  spawnTarget('spark',a.r*.20,an,va);
+  spawnTarget('spark',a.r*.31,an+Math.PI,va);
+}
+function completeOnboarding(){
+  if(!onboarding.active) return;
+  onboarding.active=false; onboarding.phase=''; onboarding.age=0;
+  introRamp=0; introPairClock=.75; spawnClock=2.8; surgeClock=0;
+  saveIntroSeen();
+  const a=arena();
+  flash=Math.max(flash,.28); shake=Math.max(shake,7);
+  floatText(a.cx,a.cy-a.r*.48,'CONTAINED','good',16,1.15);
+  ring(a.cx,a.cy,a.r*.90,'good');
+  tone(620,.10,'triangle',.045,1.35);
 }
 function spawnSplit(angle,r){
   for(const s of [-1,1]){
@@ -121,7 +165,7 @@ function addParticles(x,y,count,style='hit'){
     particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:rand(.22,.65),max:1,size:rand(1,4),style});
   }
 }
-function floatText(x,y,text,style='good',size=16){ texts.push({x,y,text,life:.75,style,size,vy:-36}); }
+function floatText(x,y,text,style='good',size=16,life=.75){ texts.push({x,y,text,life,style,size,vy:-36}); }
 function ring(x,y,r,style='good'){ rings.push({x,y,r,life:.45,style}); }
 
 function cut(){
@@ -143,6 +187,8 @@ function cut(){
     }
   }
   const previousCombo=combo;
+  const onboardingHit=hits.some(([e])=>e.tutorial);
+  const nearMiss=hits.some(([e])=>e.r>a.r*.78);
   let gained=0;
   if(mines.length){
     for(const [e,p] of mines){ e.dead=true; addParticles(p.x,p.y,28,'bad'); ring(p.x,p.y,18,'bad'); }
@@ -171,6 +217,7 @@ function cut(){
     slash.hits=hits.length;
     floatText(a.cx,a.cy+10, hits.length>=2?`${hits.length}x CUT  +${gained}`:`+${gained}`,hits.some(h=>h[0].kind==='gold')?'gold':'good',hits.length>=3?24:18);
     if(hits.length>=3){ slowPulse=.13; flash=Math.max(flash,.22); }
+    if(nearMiss) floatText(a.cx,a.cy-34,'BREACH AVERTED','gold',14,1.0);
     tone(260+combo*22,.055,'square',.035,1.8);
     if(hits.length>=2) setTimeout(()=>tone(500+hits.length*85,.07,'triangle',.04,1.3),35);
   } else if(!mines.length) {
@@ -179,6 +226,7 @@ function cut(){
     tone(120,.035,'triangle',.018,.8);
   }
   if(previousCombo>=4 && combo===0 && !mines.length) floatText(a.cx,a.cy+12,'COMBO DROPPED','dim',13);
+  if(onboardingHit && state==='play') completeOnboarding();
   cleanupDead();
 }
 function cleanupDead(){ entities=entities.filter(e=>!e.dead); }
@@ -186,7 +234,7 @@ function cleanupDead(){ entities=entities.filter(e=>!e.dead); }
 function breach(e){
   const a=arena(), p=pol(a.cx,a.cy,a.r,e.angle);
   e.dead=true; integrity--; combo=0; shake=Math.max(shake,10); flash=Math.max(flash,.35);
-  addParticles(p.x,p.y,18,'bad'); ring(p.x,p.y,18,'bad'); floatText(p.x,p.y,'BREACH','bad',14);
+  addParticles(p.x,p.y,22,'bad'); ring(p.x,p.y,18,'bad'); floatText(p.x,p.y,'LIGHT ESCAPED','bad',13,1.0);
   tone(130,.14,'square',.05,.55);
   if(integrity<=0) endGame();
 }
@@ -216,19 +264,30 @@ function update(dt){
   playerAngle=(playerAngle + orbitDir*orbitSpeed*gd + TAU)%TAU;
 
   const difficulty=Math.min(1,elapsed/85);
-  spawnClock-=gd;
-  const spawnInterval=Math.max(.33,1.02-difficulty*.52);
-  if(spawnClock<=0){
-    spawnTarget();
-    if(elapsed>26 && Math.random()<.08+difficulty*.08) spawnTarget(Math.random()<.7?'spark':'mine');
-    spawnClock=spawnInterval*rand(.72,1.15);
-  }
-  surgeClock+=gd;
-  if(surgeClock>18){
-    surgeClock=0;
-    const count=3+Math.floor(difficulty*2);
-    for(let i=0;i<count;i++) setTimeout(()=>{ if(state==='play') spawnTarget(i===count-1 && elapsed>22?'gold':'spark'); }, i*90);
-    const a=arena(); floatText(a.cx,a.cy-a.r*.63,'SURGE','gold',18); tone(210,.09,'triangle',.04,1.7);
+  if(onboarding.active){
+    onboarding.age+=gd;
+    const tut=entities.find(e=>e.tutorial && !e.dead);
+    if(tut && onboarding.phase==='escape' && onboarding.age>.7 && lineDiff(playerAngle,tut.angle)<.48) onboarding.phase='cut';
+  } else {
+    introRamp+=gd;
+    if(introPairClock>=0){
+      introPairClock-=gd;
+      if(introPairClock<=0){ introPairClock=-1; spawnAlignedPair(); }
+    }
+    spawnClock-=gd;
+    const spawnInterval=Math.max(.33,1.02-difficulty*.52);
+    if(spawnClock<=0){
+      spawnTarget();
+      if(elapsed>26 && introRamp>12 && Math.random()<.08+difficulty*.08) spawnTarget(Math.random()<.7?'spark':'mine');
+      spawnClock=spawnInterval*rand(.72,1.15);
+    }
+    surgeClock+=gd;
+    if(surgeClock>18 && introRamp>12){
+      surgeClock=0;
+      const count=3+Math.floor(difficulty*2);
+      for(let i=0;i<count;i++) setTimeout(()=>{ if(state==='play') spawnTarget(i===count-1 && elapsed>22?'gold':'spark'); }, i*90);
+      const a=arena(); floatText(a.cx,a.cy-a.r*.63,'SURGE','gold',18); tone(210,.09,'triangle',.04,1.7);
+    }
   }
 
   const a=arena();
@@ -240,7 +299,10 @@ function update(dt){
     }
   }
   cleanupDead();
-  if(state==='play' && elapsed>1 && entities.filter(e=>e.kind!=='mine').length===0) spawnTarget('spark');
+  if(state==='play' && onboarding.active && !entities.some(e=>e.tutorial)){
+    onboarding.age=0; onboarding.phase='escape'; spawnTutorialTarget();
+  }
+  if(state==='play' && !onboarding.active && elapsed>1 && entities.filter(e=>e.kind!=='mine').length===0) spawnTarget('spark');
   if(slash){ slash.life-=dt; if(slash.life<=0) slash=null; }
   updateFX(dt);
 }
@@ -284,12 +346,12 @@ function drawTitle(){
   glowDot(p.x,p.y,7,'#7ff6ff',16);
   ctx.restore();
   textCenter('CUTLINE',H*.25,Math.min(64,W*.105),'#f8f3e9','700');
-  textCenter('EVERY CUT CROSSES THE CORE',H*.25+54,12,'rgba(199,227,239,.65)','600');
+  textCenter('STOP THE LIGHT • EVERY CUT CROSSES THE CORE',H*.25+54,12,'rgba(199,227,239,.65)','600');
   const y=H*.73;
   textCenter('TAP / SPACE TO CUT',y,15,'#f8f3e9','700');
   textCenter('HOLD TO SLOW TIME • RELEASE TO STRIKE',y+28,11,'rgba(199,227,239,.70)','600');
   textCenter(`BEST  ${best.toLocaleString()}`,y+65,11,'rgba(255,206,108,.80)','600');
-  textCenter('CUT TARGETS • AVOID RED FRACTURES • DON’T LET LIGHT ESCAPE',H-30,10,'rgba(199,227,239,.48)','600');
+  textCenter('STOP THE LIGHT AT THE RIM • CUT TARGETS • AVOID RED FRACTURES',H-30,10,'rgba(199,227,239,.48)','600');
 }
 
 function drawGame(){
@@ -304,15 +366,17 @@ function drawGame(){
   ctx.strokeStyle='rgba(105,236,255,.62)'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(0,0,a.r,0,TAU); ctx.stroke();
   ctx.shadowBlur=0;
   ctx.strokeStyle='rgba(255,255,255,.06)'; ctx.lineWidth=7; ctx.beginPath(); ctx.arc(0,0,a.r+7,0,TAU); ctx.stroke();
+  drawEscapeWarnings(a);
   // core
   const cp=.5+.5*Math.sin(performance.now()*.004);
   glowDot(0,0,10+cp*2,'#e8f9ff',26);
   ctx.strokeStyle='rgba(255,207,110,.30)'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(0,0,21+cp*3,0,TAU); ctx.stroke();
-  // aim preview while holding
-  if(holding){
-    const alpha=.16 + (100-focus)*.0018;
+  // aim preview while holding; the first-run cue briefly previews the cut line
+  const introAim=onboarding.active && onboarding.phase==='cut';
+  if(holding || introAim){
+    const alpha=holding ? .16 + (100-focus)*.0018 : .24;
     const ux=Math.cos(playerAngle),uy=Math.sin(playerAngle);
-    ctx.setLineDash([7,8]); ctx.strokeStyle=`rgba(244,247,238,${alpha})`; ctx.lineWidth=1.5;
+    ctx.setLineDash([7,8]); ctx.strokeStyle=`rgba(244,247,238,${alpha})`; ctx.lineWidth=introAim&&!holding?1.8:1.5;
     ctx.beginPath(); ctx.moveTo(-ux*a.r,-uy*a.r); ctx.lineTo(ux*a.r,uy*a.r); ctx.stroke(); ctx.setLineDash([]);
   }
   ctx.restore();
@@ -346,6 +410,8 @@ function drawGame(){
   ctx.strokeStyle='rgba(255,255,255,.75)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(pp.x,pp.y); ctx.lineTo(pp.x+Math.cos(tangent)*15,pp.y+Math.sin(tangent)*15); ctx.stroke();
   ctx.restore();
 
+  drawOnboarding(a);
+
   // effects
   for(const r of rings){
     ctx.strokeStyle=r.style==='bad'?`rgba(255,82,102,${r.life})`:r.style==='gold'?`rgba(255,204,91,${r.life})`:`rgba(111,246,255,${r.life})`;
@@ -365,21 +431,61 @@ function drawGame(){
   drawHUD();
 }
 
+function drawEscapeWarnings(a){
+  const now=performance.now()*.012;
+  for(const e of entities){
+    if(e.dead || e.kind==='mine') continue;
+    const risk=escapeRisk(e,a);
+    if(risk<=0) continue;
+    const pulse=.55+.45*Math.sin(now+e.pulse);
+    ctx.save(); ctx.translate(a.cx,a.cy);
+    ctx.strokeStyle=`rgba(255,88,108,${risk*(.22+pulse*.42)})`;
+    ctx.lineWidth=2+risk*4; ctx.shadowBlur=8+risk*18; ctx.shadowColor='#ff5b70';
+    const spread=.055+risk*.09;
+    ctx.beginPath(); ctx.arc(0,0,a.r,e.angle-spread,e.angle+spread); ctx.stroke();
+    ctx.restore();
+  }
+}
+function drawOnboarding(a){
+  if(!onboarding.active) return;
+  const tut=entities.find(e=>e.tutorial && !e.dead);
+  if(tut){
+    const p=pol(a.cx,a.cy,tut.r,tut.angle), edge=pol(a.cx,a.cy,a.r,tut.angle);
+    ctx.save();
+    ctx.setLineDash([4,7]); ctx.strokeStyle='rgba(255,184,110,.22)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(edge.x,edge.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle='rgba(255,214,145,.55)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(p.x,p.y,15+Math.sin(performance.now()*.008)*2,0,TAU); ctx.stroke();
+    ctx.restore();
+  }
+  const y=Math.max(82,H*.12);
+  if(onboarding.phase==='escape'){
+    textCenter("DON'T LET THE LIGHT ESCAPE",y,Math.min(17,Math.max(13,W*.032)),'#ffd08a','700');
+  } else {
+    textCenter('CUT THROUGH THE CORE',y,Math.min(17,Math.max(13,W*.032)),'#b9fbff','700');
+    textCenter('TAP / SPACE • HOLD TO AIM',y+25,10,'rgba(229,239,241,.68)','700');
+  }
+}
+
 function drawSpark(x,y,e){
-  const pulse=.5+.5*Math.sin(e.pulse);
+  const pulse=.5+.5*Math.sin(e.pulse), risk=escapeRisk(e,arena());
   ctx.save(); ctx.translate(x,y); ctx.rotate(e.angle+e.age*.7);
   ctx.globalCompositeOperation='lighter';
   ctx.shadowBlur=12+pulse*8; ctx.shadowColor='#79f6ff'; ctx.fillStyle='#dffcff';
   ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(5,0); ctx.lineTo(0,8); ctx.lineTo(-5,0); ctx.closePath(); ctx.fill();
-  ctx.globalAlpha=.18; ctx.fillStyle='#60e9ff'; ctx.beginPath(); ctx.arc(0,0,13+pulse*3,0,TAU); ctx.fill(); ctx.restore();
+  ctx.globalAlpha=.18; ctx.fillStyle='#60e9ff'; ctx.beginPath(); ctx.arc(0,0,13+pulse*3,0,TAU); ctx.fill();
+  if(risk>0){ ctx.globalAlpha=risk; ctx.strokeStyle='#ff9d72'; ctx.lineWidth=1.5+risk; ctx.beginPath(); ctx.arc(0,0,14+risk*5,0,TAU); ctx.stroke(); }
+  ctx.restore();
 }
 function drawGold(x,y,e){
-  const pulse=.5+.5*Math.sin(e.pulse*1.2);
+  const pulse=.5+.5*Math.sin(e.pulse*1.2), risk=escapeRisk(e,arena());
   ctx.save(); ctx.translate(x,y); ctx.rotate(-e.age*1.4);
   ctx.globalCompositeOperation='lighter'; ctx.shadowBlur=20; ctx.shadowColor='#ffd35e';
   ctx.strokeStyle='#ffe6a0'; ctx.lineWidth=2;
   ctx.beginPath(); for(let i=0;i<6;i++){ const an=i*TAU/6; const rr=i%2?7:10; const px=Math.cos(an)*rr,py=Math.sin(an)*rr; i?ctx.lineTo(px,py):ctx.moveTo(px,py); } ctx.closePath(); ctx.stroke();
-  ctx.fillStyle=`rgba(255,211,94,${.14+pulse*.12})`; ctx.fill(); ctx.restore();
+  ctx.fillStyle=`rgba(255,211,94,${.14+pulse*.12})`; ctx.fill();
+  if(risk>0){ ctx.globalAlpha=risk; ctx.strokeStyle='#ff8e69'; ctx.lineWidth=1.5+risk; ctx.beginPath(); ctx.arc(0,0,15+risk*5,0,TAU); ctx.stroke(); }
+  ctx.restore();
 }
 function drawMine(x,y,e){
   const pulse=.5+.5*Math.sin(e.pulse);
@@ -415,7 +521,7 @@ function drawHUD(){
     const c=`CUT x${combo}`;
     textCenter(c,margin+4,16, combo>=6?'#ffd76c':'#91f7ff','700');
   }
-  if(elapsed<5){
+  if(elapsed<5 && !onboarding.active && introRamp>12){
     ctx.globalAlpha=Math.max(0,1-elapsed/5);
     textCenter('HOLD TO AIM IN SLOW TIME • RELEASE TO CUT',H*.12,11,'rgba(229,239,241,.72)','700');
     ctx.globalAlpha=1;
