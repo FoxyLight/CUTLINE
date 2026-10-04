@@ -346,12 +346,22 @@ function drawTitle(){
   glowDot(p.x,p.y,7,'#7ff6ff',16);
   ctx.restore();
   textCenter('CUTLINE',H*.25,Math.min(64,W*.105),'#f8f3e9','700');
-  textCenter('STOP THE LIGHT • EVERY CUT CROSSES THE CORE',H*.25+54,12,'rgba(199,227,239,.65)','600');
+  if(W<520){
+    textCenter('STOP THE LIGHT',H*.25+48,11,'rgba(199,227,239,.65)','600');
+    textCenter('EVERY CUT CROSSES THE CORE',H*.25+66,10,'rgba(199,227,239,.58)','600');
+  } else {
+    textCenter('STOP THE LIGHT • EVERY CUT CROSSES THE CORE',H*.25+54,12,'rgba(199,227,239,.65)','600');
+  }
   const y=H*.73;
   textCenter('TAP / SPACE TO CUT',y,15,'#f8f3e9','700');
   textCenter('HOLD TO SLOW TIME • RELEASE TO STRIKE',y+28,11,'rgba(199,227,239,.70)','600');
   textCenter(`BEST  ${best.toLocaleString()}`,y+65,11,'rgba(255,206,108,.80)','600');
-  textCenter('STOP THE LIGHT AT THE RIM • CUT TARGETS • AVOID RED FRACTURES',H-30,10,'rgba(199,227,239,.48)','600');
+  if(W<520){
+    textCenter('STOP THE LIGHT AT THE RIM • CUT TARGETS',H-45,9,'rgba(199,227,239,.48)','600');
+    textCenter('AVOID RED FRACTURES',H-27,9,'rgba(199,227,239,.42)','600');
+  } else {
+    textCenter('STOP THE LIGHT AT THE RIM • CUT TARGETS • AVOID RED FRACTURES',H-30,10,'rgba(199,227,239,.48)','600');
+  }
 }
 
 function drawGame(){
@@ -538,9 +548,26 @@ function drawGameOver(){
   ctx.globalAlpha=blink; textCenter('TAP / SPACE TO RUN IT BACK',H*.67,13,'#aaf8ff','700'); ctx.globalAlpha=1;
 }
 
-function textCenter(txt,y,size,color,weight='600'){ textCenterAt(txt,W/2,y,size,color,weight); }
-function textCenterAt(txt,x,y,size,color,weight='600'){
-  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font=`${weight} ${size}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`; ctx.fillStyle=color; ctx.fillText(txt,x,y);
+function fitTextSize(txt,size,weight,maxWidth){
+  let fitted=size;
+  ctx.font=`${weight} ${fitted}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`;
+  const measured=ctx.measureText(txt).width;
+  if(measured>maxWidth) fitted=Math.max(7,fitted*(maxWidth/measured));
+  return fitted;
+}
+function textCenter(txt,y,size,color,weight='600',maxWidth=null){
+  textCenterAt(txt,W/2,y,size,color,weight,maxWidth);
+}
+function textCenterAt(txt,x,y,size,color,weight='600',maxWidth=null){
+  const sidePad=Math.max(14,Math.min(24,W*.045));
+  const widthBudget=Math.max(40,Math.min(maxWidth ?? (W-sidePad*2),W-sidePad*2));
+  const fitted=fitTextSize(txt,size,weight,widthBudget);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${weight} ${fitted}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`;
+  ctx.fillStyle=color;
+  const textWidth=Math.min(widthBudget,ctx.measureText(txt).width);
+  const safeX=Math.max(sidePad+textWidth/2,Math.min(W-sidePad-textWidth/2,x));
+  ctx.fillText(txt,safeX,y);
 }
 
 function press(source){
